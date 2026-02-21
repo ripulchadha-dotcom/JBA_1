@@ -810,11 +810,12 @@ function subscribeAll() {
 }
 
 function refreshDashKPIs() {
-  const _ds2=DB.daily.filter(d=>d.date&&d.confirmed>0).sort((a,b)=>b.date>a.date?1:-1);const td=_ds2[0]||{date:'',confirmed:0,units:0,revenue:0};
-  const openOrd = DB.orders.filter(o => o.deliveryStatus==='Pending' && o.status==='Confirmed').length;
-  const openComp = DB.complaints.filter(c => c.status==='Open' || c.status==='Escalated').length;
-  if (E('tgrid')) E('tgrid').innerHTML = buildTGrid(td, openOrd, openComp);
-  if (E('last-updated')) E('last-updated').textContent = new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+  const today=(()=>{const orders=DB.orders.filter(o=>o.entryDate);if(!orders.length)return'';return orders.map(o=>o.entryDate).sort().reverse()[0];})();
+  const todayOrders=DB.orders.filter(o=>o.entryDate===today&&o.status!=='Cancelled');
+  const td={date:today,revenue:todayOrders.reduce((s,o)=>s+(+o.price||0)*(+o.qty||1),0),units:todayOrders.reduce((s,o)=>s+(+o.qty||1),0),confirmed:todayOrders.length};
+  const openOrd=DB.orders.filter(o=>o.deliveryStatus==='Pending'&&o.status==='Confirmed').length;
+  const openComp=DB.complaints.filter(c=>c.status==='Open'||c.status==='Escalated').length;
+  if(E('tgrid'))E('tgrid').innerHTML=buildTGrid(td,openOrd,openComp);
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1056,18 +1057,38 @@ function hideTT(){const t=E('ctt');if(t)t.style.display='none';}
 // ═══════════════════════════════════════════════════════════
 function renderDash(){
   if(E('last-updated'))E('last-updated').textContent=new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
-  const daily=DB.daily.filter(d=>d.date);
-  const _ds=daily.filter(d=>d.confirmed>0).sort((a,b)=>b.date>a.date?1:-1);const td=_ds[0]||daily.slice(-1)[0]||{date:'',confirmed:0,units:0,revenue:0};
+  
+  // Calculate KPIs directly from DB.orders (real-time, always accurate)
+  const today = (()=>{
+    const orders = DB.orders.filter(o=>o.entryDate);
+    if(!orders.length) return '';
+    return orders.map(o=>o.entryDate).sort().reverse()[0];
+  })();
+  
+  const todayOrders = DB.orders.filter(o=>o.entryDate===today && o.status!=='Cancelled');
+  const todayRevenue = todayOrders.reduce((s,o)=>s+(+o.price||0)*(+o.qty||1),0);
+  const todayUnits = todayOrders.reduce((s,o)=>s+(+o.qty||1),0);
+  const td = {date:today, revenue:todayRevenue, confirmed:todayOrders.length, units:todayUnits};
+  
+  // Week calculations from DB.orders
   const _gw=(dt)=>{const d=new Date(dt||Date.now()),dy=d.getDay(),m=new Date(d);m.setDate(d.getDate()-(dy===0?6:dy-1));const e=new Date(m);e.setDate(m.getDate()+6);return{s:m.toISOString().slice(0,10),e:e.toISOString().slice(0,10)};};
-  const _cw=_gw(td.date);const _lwE=new Date(_cw.s);_lwE.setDate(_lwE.getDate()-1);const _lwS=new Date(_lwE);_lwS.setDate(_lwE.getDate()-6);
-  const [wkSS,wkEE,lwSS,lwEE]=[_cw.s,_cw.e,_lwS.toISOString().slice(0,10),_lwE.toISOString().slice(0,10)];
-  const twR=daily.filter(d=>d.date>=wkSS&&d.date<=wkEE).reduce((s,d)=>s+d.revenue,0);
-  const lwR=daily.filter(d=>d.date>=lwSS&&d.date<=lwEE).reduce((s,d)=>s+d.revenue,0);
-  const wkChg=lwR?((twR-lwR)/lwR*100).toFixed(1):0;
+  const wk=_gw(today);
+  const lwkEnd=new Date(wk.s); lwkEnd.setDate(lwkEnd.getDate()-1);
+  const lwkStart=new Date(lwkEnd); lwkStart.setDate(lwkEnd.getDate()-6);
+  const [wkSS,wkEE,lwSS,lwEE]=[wk.s,wk.e,lwkStart.toISOString().slice(0,10),lwkEnd.toISOString().slice(0,10)];
+  
+  const wkOrders = DB.orders.filter(o=>o.entryDate>=wkSS&&o.entryDate<=wkEE&&o.status!=='Cancelled');
+  const lwkOrders = DB.orders.filter(o=>o.entryDate>=lwSS&&o.entryDate<=lwEE&&o.status!=='Cancelled');
+  const twR = wkOrders.reduce((s,o)=>s+(+o.price||0)*(+o.qty||1),0);
+  const lwR = lwkOrders.reduce((s,o)=>s+(+o.price||0)*(+o.qty||1),0);
+  const wkChg = lwR?((twR-lwR)/lwR*100).toFixed(1):0;
+  
   const openOrd=DB.orders.filter(o=>o.deliveryStatus==='Pending'&&o.status==='Confirmed').length;
   const openComp=DB.complaints.filter(c=>c.status==='Open'||c.status==='Escalated').length;
   if(E('tgrid'))E('tgrid').innerHTML=buildTGrid(td,openOrd,openComp);
-  updMainChart(cView,twR,wkChg,wkSS,wkEE,td.date);updUnitsChart(uView,wkSS,wkEE,td.date);renderTopSKUs();renderStockA();renderIssues();
+  updMainChart(cView,twR,wkChg,wkSS,wkEE,today);
+  updUnitsChart(uView,wkSS,wkEE,today);
+  renderTopSKUs();renderStockA();renderIssues();
 }
 function buildTGrid(td,openOrd,openComp){
   return`
@@ -1084,24 +1105,75 @@ function setCView(v,btn){
   updMainChart(v,twR,lwR?((twR-lwR)/lwR*100).toFixed(1):0);
 }
 function updMainChart(view,wkRev,wkChg,wkS,wkE,todayD){
-  const daily=DB.daily.filter(d=>d.date),DN=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  if(!wkS){const _sd2=daily.filter(d=>d.confirmed>0).sort((a,b)=>b.date>a.date?1:-1)[0]||{};todayD=_sd2.date||'';const _gw2=(dt)=>{const d=new Date(dt||Date.now()),dy=d.getDay(),m=new Date(d);m.setDate(d.getDate()-(dy===0?6:dy-1));const e=new Date(m);e.setDate(m.getDate()+6);return{s:m.toISOString().slice(0,10),e:e.toISOString().slice(0,10)};};const _w2=_gw2(todayD);wkS=_w2.s;wkE=_w2.e;}
+  const DN=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  // Build daily data from DB.orders (real-time)
+  const ordersByDate={};
+  DB.orders.filter(o=>o.entryDate&&o.status!=='Cancelled').forEach(o=>{
+    const d=o.entryDate; if(!ordersByDate[d]) ordersByDate[d]={date:d,revenue:0,units:0,confirmed:0};
+    ordersByDate[d].revenue+=(+o.price||0)*(+o.qty||1);
+    ordersByDate[d].units+=(+o.qty||1);
+    ordersByDate[d].confirmed++;
+  });
+  const daily=Object.values(ordersByDate).sort((a,b)=>a.date>b.date?1:-1);
+  
+  if(!wkS){const _gw=(dt)=>{const d=new Date(dt||Date.now()),dy=d.getDay(),m=new Date(d);m.setDate(d.getDate()-(dy===0?6:dy-1));const e=new Date(m);e.setDate(m.getDate()+6);return{s:m.toISOString().slice(0,10),e:e.toISOString().slice(0,10)};};const w=_gw(todayD);wkS=w.s;wkE=w.e;}
+  const curMonth=(todayD||new Date().toISOString()).slice(0,7);
+  
   let vd,mv,ms,mc;
-  if(view==='week'){vd=daily.filter(d=>d.date>=wkS&&d.date<=wkE);mv=fi(wkRev,true);ms='This week';const c=+wkChg;mc=`<span style="color:${c<0?'var(--red)':'var(--green)'}">${c<0?'▼':'▲'} ${Math.abs(c)}%</span> <span style="color:var(--muted);font-size:.68rem">vs last week</span>`;}
-  else if(view==='month'){const _cm=(todayD||new Date().toISOString()).slice(0,7);vd=daily.filter(d=>d.date.startsWith(_cm));const r=vd.reduce((s,d)=>s+d.revenue,0);mv=fi(r,true);ms='February 2026';mc='';}
-  else{vd=daily.filter(d=>d.revenue>0);mv=fi(vd.reduce((s,d)=>s+d.revenue,0),true);ms='All time';mc='';}
-  if(E('cmv'))E('cmv').textContent=mv;if(E('cms'))E('cms').textContent=ms;if(E('cmc'))E('cmc').innerHTML=mc||'';
-  const cd=vd.map(d=>{const dt=new Date(d.date);return{label:view==='week'?DN[dt.getDay()]:d.date.slice(8),v1:d.revenue,dim:d.date>(todayD||''),tt:`${fd(d.date)}: ${fi(d.revenue)} · ${d.confirmed} orders`,onclick:`fOrdDate('${d.date}')`};});
-  drawChart('mchart',cd,{H:170});
+  if(view==='week'){
+    vd=daily.filter(d=>d.date>=wkS&&d.date<=wkE);
+    const r=vd.reduce((s,d)=>s+d.revenue,0);
+    mv=fi(r,true);ms='This week';
+    const c=+wkChg;mc=`<span style="color:${c<0?'var(--red)':'var(--green)'}">${c<0?'▼':'▲'} ${Math.abs(c)}%</span> <span style="color:var(--muted);font-size:.68rem">vs last week</span>`;
+  } else if(view==='month'){
+    vd=daily.filter(d=>d.date.startsWith(curMonth));
+    const r=vd.reduce((s,d)=>s+d.revenue,0);
+    mv=fi(r,true);ms=new Date(curMonth+'-01').toLocaleString('en-IN',{month:'long',year:'numeric'});mc='';
+  } else {
+    vd=daily.filter(d=>d.revenue>0);
+    mv=fi(vd.reduce((s,d)=>s+d.revenue,0),true);ms='All time';mc='';
+  }
+  
+  const mx=Math.max(...vd.map(d=>d.revenue),1);
+  const bars=vd.map(d=>{
+    const pct=Math.round(d.revenue/mx*100);
+    const label=fi(d.revenue,true);
+    const day=DN[new Date(d.date+'T00:00:00').getDay()];
+    return`<div class="bar-wrap${d.date===(todayD||'')?' today':''}"><div class="bar-val">${label}</div><div class="bar" style="height:${Math.max(pct,2)}%;background:${d.date>(todayD||'')?'var(--muted)':'var(--primary)'}"></div><div class="bar-lbl">${day}</div></div>`;
+  }).join('');
+  
+  const el=E('main-chart');
+  if(el) el.innerHTML=`
+    <div class="chart-header">
+      <div><div class="chart-val">${mv}</div><div class="chart-sub">${ms}</div><div class="chart-chg">${mc}</div></div>
+    </div>
+    <div class="bars">${bars||'<div style="color:var(--muted);padding:20px">No data for this period</div>'}</div>
+    <div style="font-size:.65rem;color:var(--muted);text-align:right;margin-top:4px">Data syncs live from Firebase — All devices stay in sync</div>`;
 }
 function setUView(v,btn){uView=v;const tabs=document.querySelectorAll('#page-dashboard .g3 .ctabs .ctab');tabs.forEach(x=>x.classList.remove('active'));btn?.classList.add('active');updUnitsChart(v);}
 function updUnitsChart(view,wkS,wkE,todayD){
-  const daily=DB.daily.filter(d=>d.date),DN=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-  if(!wkS){const _sd3=daily.filter(d=>d.confirmed>0).sort((a,b)=>b.date>a.date?1:-1)[0]||{};todayD=_sd3.date||'';const _gw3=(dt)=>{const d=new Date(dt||Date.now()),dy=d.getDay(),m=new Date(d);m.setDate(d.getDate()-(dy===0?6:dy-1));const e=new Date(m);e.setDate(m.getDate()+6);return{s:m.toISOString().slice(0,10),e:e.toISOString().slice(0,10)};};const _w3=_gw3(todayD);wkS=_w3.s;wkE=_w3.e;}
-  const _cm2=(todayD||new Date().toISOString()).slice(0,7);
-  const vd=view==='week'?daily.filter(d=>d.date>=wkS&&d.date<=wkE):daily.filter(d=>d.date.startsWith(_cm2));
-  const cd=vd.map(d=>{const dt=new Date(d.date);return{label:view==='week'?DN[dt.getDay()]:d.date.slice(8),v1:d.confirmed,v2:d.units,dim:d.date>(todayD||''),tt:`${fd(d.date)}: ${d.confirmed} orders`,tt2:`${d.units} units`};});
-  drawChart('uchart',cd,{H:130});
+  const DN=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+  // Build from DB.orders directly
+  const ordersByDate={};
+  DB.orders.filter(o=>o.entryDate&&o.status!=='Cancelled').forEach(o=>{
+    const d=o.entryDate; if(!ordersByDate[d]) ordersByDate[d]={date:d,units:0,confirmed:0};
+    ordersByDate[d].units+=(+o.qty||1); ordersByDate[d].confirmed++;
+  });
+  const daily=Object.values(ordersByDate).sort((a,b)=>a.date>b.date?1:-1);
+  
+  if(!wkS){const _gw=(dt)=>{const d=new Date(dt||Date.now()),dy=d.getDay(),m=new Date(d);m.setDate(d.getDate()-(dy===0?6:dy-1));const e=new Date(m);e.setDate(m.getDate()+6);return{s:m.toISOString().slice(0,10),e:e.toISOString().slice(0,10)};};const w=_gw(todayD);wkS=w.s;wkE=w.e;}
+  const curMonth=(todayD||new Date().toISOString()).slice(0,7);
+  const vd=view==='week'?daily.filter(d=>d.date>=wkS&&d.date<=wkE):daily.filter(d=>d.date.startsWith(curMonth));
+  
+  const mx=Math.max(...vd.map(d=>d.units),1);
+  const bars=vd.map(d=>{
+    const pct=Math.round(d.units/mx*100);
+    const day=DN[new Date(d.date+'T00:00:00').getDay()];
+    return`<div class="bar-wrap"><div class="bar-val">${d.units}</div><div class="bar" style="height:${Math.max(pct,2)}%;background:${d.date>(todayD||'')?'var(--muted)':'#f59e0b'}"></div><div class="bar-lbl">${day}</div></div>`;
+  }).join('');
+  
+  const el=E('units-chart');
+  if(el) el.innerHTML=`<div class="bars">${bars||'<div style="color:var(--muted);padding:20px">No data</div>'}</div>`;
 }
 function renderTopSKUs(){
   const m={};
