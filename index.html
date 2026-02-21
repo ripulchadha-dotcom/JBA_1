@@ -838,14 +838,47 @@ async function fsAdd(col, data) {
   return ref.id;
 }
 async function fsSet(col, id, data) {
-  if (!db) { toast('Firebase not connected.'); return; }
+  if (!db || !fbReady) {
+    // Update locally
+    const idx = DB[col] ? DB[col].findIndex(r => r._id === id) : -1;
+    if (idx !== -1) { DB[col][idx] = {...data, _id: id}; render(curPage); updateBadges(); }
+    toast('Saved locally — Firebase not connected');
+    return;
+  }
+  // If this is a seed/local ID (not a real Firestore ID), add as new record instead
+  const isSeedId = /^(lo|li|la|lr|lc|lk|ld|lp|local_|s\d|si|sa|sr|sc|sk|sd|sp)/.test(id);
+  if (isSeedId) {
+    // Add as new Firestore document
+    const clean = {...data}; delete clean._id;
+    setSyncStatus('syncing', 'Saving…');
+    const ref = await db.collection(col).add(clean);
+    // Update local record with real Firestore ID
+    const idx = DB[col] ? DB[col].findIndex(r => r._id === id) : -1;
+    if (idx !== -1) DB[col][idx]._id = ref.id;
+    setSyncStatus('live', 'Saved ✓');
+    return;
+  }
   setSyncStatus('syncing', 'Saving…');
   const clean = {...data}; delete clean._id;
   await db.collection(col).doc(id).set(clean);
   setSyncStatus('live', 'Saved ✓');
 }
 async function fsDel(col, id) {
-  if (!db) { toast('Firebase not connected.'); return; }
+  if (!db || !fbReady) {
+    // Delete locally only
+    if (DB[col]) DB[col] = DB[col].filter(r => r._id !== id);
+    render(curPage); updateBadges();
+    toast('Deleted locally — Firebase not connected');
+    return;
+  }
+  // If seed ID, just remove locally (doesn't exist in Firestore)
+  const isSeedId = /^(lo|li|la|lr|lc|lk|ld|lp|local_|s\d|si|sa|sr|sc|sk|sd|sp)/.test(id);
+  if (isSeedId) {
+    if (DB[col]) DB[col] = DB[col].filter(r => r._id !== id);
+    render(curPage); updateBadges();
+    toast('Deleted ✓');
+    return;
+  }
   setSyncStatus('syncing', 'Deleting…');
   await db.collection(col).doc(id).delete();
   setSyncStatus('live', 'Deleted ✓');
